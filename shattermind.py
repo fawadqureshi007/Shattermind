@@ -1,123 +1,202 @@
 #!/usr/bin/env python3
+# SHATTERMIND - Next Generation Recon & Vulnerability Intelligence Framework
 
-import os
-import sys
-import argparse
-import threading
-from datetime import datetime
+import requests
+import socket
+import dns.resolver
+import whois
+import re
+import subprocess
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
 
-# ---------------- CONFIG ----------------
-TELEGRAM_TOKEN = ""   # add if needed
-CHAT_ID = ""          # add if needed
-
-# ---------------- Banner ----------------
+# =========================
+# 🎨 Banner
+# =========================
 def banner():
     print("""
-   ███████╗██╗  ██╗ █████╗ ████████╗████████╗███████╗██████╗ ███╗   ███╗
-   ██╔════╝██║  ██║██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗████╗ ████║
-   ███████╗███████║███████║   ██║      ██║   █████╗  ██████╔╝██╔████╔██║
-   ╚════██║██╔══██║██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║
-   ███████║██║  ██║██║  ██║   ██║      ██║   ███████╗██║  ██║██║ ╚═╝ ██║
-   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝
-        ShatterMind v2 🔥
+╔══════════════════════════════════════════════╗
+║            SHATTERMIND Framework             ║
+║   Recon | OSINT | Vulnerability Intelligence ║
+╚══════════════════════════════════════════════╝
     """)
 
-# ---------------- Utils ----------------
-def run(cmd):
-    print(f"[+] {cmd}")
-    os.system(cmd)
+# =========================
+# 🌐 Recon Engine
+# =========================
+def website_info(target):
+    try:
+        r = requests.get(target, timeout=5)
+        print(f"[+] Title: {re.findall('<title>(.*?)</title>', r.text)[0]}")
+        print(f"[+] Server: {r.headers.get('Server')}")
+    except:
+        print("[-] Error fetching website")
 
-def workspace(domain):
-    path = f"output/{domain}_{datetime.now().strftime('%H%M%S')}"
-    os.makedirs(path, exist_ok=True)
-    return path
+    try:
+        ip = socket.gethostbyname(target.replace("http://","").replace("https://",""))
+        print(f"[+] IP Address: {ip}")
+    except:
+        pass
 
-def dedup(file):
-    if os.path.exists(file):
-        with open(file) as f:
-            data = list(set(f.readlines()))
-        with open(file, "w") as f:
-            f.writelines(data)
+def cloudflare_detect(target):
+    try:
+        r = requests.get(target)
+        if "cloudflare" in str(r.headers).lower():
+            print("[+] Cloudflare Detected")
+        else:
+            print("[-] No Cloudflare")
+    except:
+        pass
 
-# ---------------- Telegram ----------------
-def send_telegram(msg):
-    if TELEGRAM_TOKEN and CHAT_ID:
-        os.system(f"curl -s -X POST https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage -d chat_id={CHAT_ID} -d text='{msg}'")
+def robots_enum(target):
+    try:
+        r = requests.get(urljoin(target, "/robots.txt"))
+        print("[+] robots.txt:\n", r.text)
+    except:
+        pass
 
-# ---------------- Modules ----------------
-def subdomain(domain, out, mode):
-    run(f"subfinder -d {domain} -silent > {out}/subs.txt")
-    if mode == "deep":
-        run(f"amass enum -d {domain} >> {out}/subs.txt")
-    dedup(f"{out}/subs.txt")
+def dns_info(domain):
+    try:
+        result = dns.resolver.resolve(domain, 'A')
+        for ip in result:
+            print(f"[+] DNS A Record: {ip}")
+    except:
+        pass
 
-def live(out):
-    run(f"httpx -l {out}/subs.txt -silent > {out}/live.txt")
+def whois_lookup(domain):
+    try:
+        info = whois.whois(domain)
+        print(f"[+] WHOIS Org: {info.org}")
+    except:
+        pass
 
-def urls(domain, out):
-    run(f"gau {domain} >> {out}/urls.txt")
-    run(f"waybackurls {domain} >> {out}/urls.txt")
-    dedup(f"{out}/urls.txt")
+# =========================
+# 🧬 Enumeration Module
+# =========================
+def subdomain_enum(domain):
+    subs = ["www", "mail", "ftp", "dev", "test"]
+    for sub in subs:
+        try:
+            full = f"{sub}.{domain}"
+            socket.gethostbyname(full)
+            print(f"[+] Found: {full}")
+        except:
+            pass
 
-def param_discovery(out):
-    print("[+] Extracting parameters...")
-    run(f"grep '=' {out}/urls.txt | sort -u > {out}/params.txt")
+def reverse_ip(ip):
+    print("[!] Reverse IP lookup requires API (hackertarget etc.)")
 
-def js_scan(out):
-    print("[+] JS Analysis...")
-    run(f"grep '.js' {out}/urls.txt > {out}/js.txt")
+def banner_grab(domain):
+    try:
+        s = socket.socket()
+        s.connect((domain, 80))
+        s.send(b"HEAD / HTTP/1.1\r\nHost: "+domain.encode()+b"\r\n\r\n")
+        print(s.recv(1024).decode())
+        s.close()
+    except:
+        pass
 
-def ports(out):
-    run(f"nmap -iL {out}/live.txt -T4 -oN {out}/ports.txt")
+# =========================
+# 🛡 Security Scanner
+# =========================
+def nmap_scan(target):
+    print("[*] Running Nmap Scan...")
+    subprocess.call(["nmap", "-F", target])
 
-def vuln(out):
-    run(f"nuclei -l {out}/live.txt -severity medium,high,critical -o {out}/vulns.txt")
+def sensitive_files(target):
+    paths = ["/.env", "/config.php", "/backup.zip"]
+    for p in paths:
+        url = target + p
+        try:
+            r = requests.get(url)
+            if r.status_code == 200:
+                print(f"[+] Found Sensitive File: {url}")
+        except:
+            pass
 
-# ---------------- Multithreading ----------------
-def threaded(tasks):
-    threads = []
-    for t in tasks:
-        th = threading.Thread(target=t)
-        th.start()
-        threads.append(th)
-    for th in threads:
-        th.join()
+def sql_test(target):
+    payload = "'"
+    try:
+        r = requests.get(target + payload)
+        if "sql" in r.text.lower():
+            print("[+] Possible SQL Injection")
+    except:
+        pass
 
-# ---------------- Main ----------------
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-d", "--domain", required=True)
-    parser.add_argument("-m", "--mode", choices=["fast","deep"], default="fast")
-    args = parser.parse_args()
+# =========================
+# 📡 Intelligence Layer
+# =========================
+def crawler(target):
+    try:
+        r = requests.get(target)
+        soup = BeautifulSoup(r.text, "html.parser")
+        for link in soup.find_all("a"):
+            print("[+] Link:", link.get("href"))
+    except:
+        pass
 
-    banner()
+def social_links(target):
+    try:
+        r = requests.get(target)
+        socials = re.findall(r"(facebook|twitter|linkedin)\.com/[^\"]+", r.text)
+        for s in socials:
+            print("[+] Social:", s)
+    except:
+        pass
 
-    out = workspace(args.domain)
-    print(f"[+] Output: {out}")
+# =========================
+# 🧩 CMS Detection
+# =========================
+def cms_detect(target):
+    try:
+        r = requests.get(target).text.lower()
 
-    # Phase 1
-    subdomain(args.domain, out, args.mode)
-    live(out)
+        if "wp-content" in r:
+            print("[+] WordPress Detected")
+        elif "joomla" in r:
+            print("[+] Joomla Detected")
+        elif "drupal" in r:
+            print("[+] Drupal Detected")
+        elif "magento" in r:
+            print("[+] Magento Detected")
+        else:
+            print("[-] Unknown CMS")
 
-    # Phase 2 (parallel)
-    threaded([
-        lambda: urls(args.domain, out),
-    ])
+    except:
+        pass
 
-    # Phase 3
-    param_discovery(out)
-    js_scan(out)
+# =========================
+# 🚀 Main Controller
+# =========================
+def run(target):
+    print("\n[ RECON ENGINE ]")
+    website_info(target)
+    cloudflare_detect(target)
+    robots_enum(target)
+    dns_info(target.replace("http://","").replace("https://",""))
+    whois_lookup(target.replace("http://","").replace("https://",""))
 
-    if args.mode == "deep":
-        ports(out)
+    print("\n[ ENUMERATION ]")
+    subdomain_enum(target.replace("http://","").replace("https://",""))
+    banner_grab(target.replace("http://","").replace("https://",""))
 
-    vuln(out)
+    print("\n[ SECURITY SCAN ]")
+    nmap_scan(target)
+    sensitive_files(target)
+    sql_test(target)
 
-    # Alerts
-    if os.path.exists(f"{out}/vulns.txt"):
-        send_telegram(f"ShatterMind Found Vulnerabilities on {args.domain}")
+    print("\n[ INTELLIGENCE ]")
+    crawler(target)
+    social_links(target)
 
-    print("\n✅ Completed. Check:", out)
+    print("\n[ CMS DETECTION ]")
+    cms_detect(target)
 
+
+# =========================
+# ▶ Entry
+# =========================
 if __name__ == "__main__":
-    main()
+    banner()
+    target = input("Enter Target (https://example.com): ")
+    run(target)
