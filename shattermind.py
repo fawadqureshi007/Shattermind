@@ -1,255 +1,123 @@
 #!/usr/bin/env python3
-import requests
-import socket
+
 import os
 import sys
-import subprocess
-import re
-from urllib.parse import urlparse
+import argparse
+import threading
+from datetime import datetime
 
-# ================= COLOR =================
-G="\033[92m"
-R="\033[91m"
-Y="\033[93m"
-B="\033[94m"
-C="\033[96m"
-W="\033[0m"
+# ---------------- CONFIG ----------------
+TELEGRAM_TOKEN = ""   # add if needed
+CHAT_ID = ""          # add if needed
 
-class ShatterMind:
+# ---------------- Banner ----------------
+def banner():
+    print("""
+   ███████╗██╗  ██╗ █████╗ ████████╗████████╗███████╗██████╗ ███╗   ███╗
+   ██╔════╝██║  ██║██╔══██╗╚══██╔══╝╚══██╔══╝██╔════╝██╔══██╗████╗ ████║
+   ███████╗███████║███████║   ██║      ██║   █████╗  ██████╔╝██╔████╔██║
+   ╚════██║██╔══██║██╔══██║   ██║      ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║
+   ███████║██║  ██║██║  ██║   ██║      ██║   ███████╗██║  ██║██║ ╚═╝ ██║
+   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝      ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝
+        ShatterMind v2 🔥
+    """)
 
-    def __init__(self):
-        self.target = None
+# ---------------- Utils ----------------
+def run(cmd):
+    print(f"[+] {cmd}")
+    os.system(cmd)
 
-    # ================= UI =================
-    def banner(self):
-        os.system("clear")
-        print(f"""{C}
-███████╗██╗  ██╗ █████╗ ████████╗████████╗███████╗
-SHATTERMIND FULL FRAMEWORK (PY EDITION)
-{W}
-Type 'help'
-""")
+def workspace(domain):
+    path = f"output/{domain}_{datetime.now().strftime('%H%M%S')}"
+    os.makedirs(path, exist_ok=True)
+    return path
 
-    def help(self):
-        print(f"""
-{C}COMMANDS:{W}
+def dedup(file):
+    if os.path.exists(file):
+        with open(file) as f:
+            data = list(set(f.readlines()))
+        with open(file, "w") as f:
+            f.writelines(data)
 
-set <url>        Set target
-info             Basic scan (title, ip, server, cms, robots)
-whois            WHOIS lookup
-geoip            Geo IP lookup
-dns              DNS lookup
-headers          HTTP headers
-subnet           Subnet calculator
-nmap             Port scan (requires nmap)
-subdomains       Subdomain scanner
-reverseip        Reverse IP lookup
-sqli             Basic SQL injection test
-wordpress        WP scanner
-crawl            Simple crawler
-exit
-""")
+# ---------------- Telegram ----------------
+def send_telegram(msg):
+    if TELEGRAM_TOKEN and CHAT_ID:
+        os.system(f"curl -s -X POST https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage -d chat_id={CHAT_ID} -d text='{msg}'")
 
-    # ================= UTIL =================
-    def normalize(self, url):
-        if not url.startswith("http"):
-            url = "http://" + url
-        return url
+# ---------------- Modules ----------------
+def subdomain(domain, out, mode):
+    run(f"subfinder -d {domain} -silent > {out}/subs.txt")
+    if mode == "deep":
+        run(f"amass enum -d {domain} >> {out}/subs.txt")
+    dedup(f"{out}/subs.txt")
 
-    def domain(self):
-        return urlparse(self.normalize(self.target)).netloc
+def live(out):
+    run(f"httpx -l {out}/subs.txt -silent > {out}/live.txt")
 
-    # ================= BASIC INFO =================
-    def info(self):
-        url = self.normalize(self.target)
-        dom = self.domain()
+def urls(domain, out):
+    run(f"gau {domain} >> {out}/urls.txt")
+    run(f"waybackurls {domain} >> {out}/urls.txt")
+    dedup(f"{out}/urls.txt")
 
-        print(Y+"\n[ BASIC INFO ]"+W)
+def param_discovery(out):
+    print("[+] Extracting parameters...")
+    run(f"grep '=' {out}/urls.txt | sort -u > {out}/params.txt")
 
-        try:
-            r = requests.get(url, timeout=6)
-            text = r.text
+def js_scan(out):
+    print("[+] JS Analysis...")
+    run(f"grep '.js' {out}/urls.txt > {out}/js.txt")
 
-            title = re.search("<title>(.*?)</title>", text, re.I)
-            if title:
-                print(G+"Title: "+title.group(1)+W)
+def ports(out):
+    run(f"nmap -iL {out}/live.txt -T4 -oN {out}/ports.txt")
 
-            print(G+"IP: "+socket.gethostbyname(dom)+W)
+def vuln(out):
+    run(f"nuclei -l {out}/live.txt -severity medium,high,critical -o {out}/vulns.txt")
 
-            headers = r.headers
-            print(G+"Server: "+headers.get("Server","Unknown")+W)
+# ---------------- Multithreading ----------------
+def threaded(tasks):
+    threads = []
+    for t in tasks:
+        th = threading.Thread(target=t)
+        th.start()
+        threads.append(th)
+    for th in threads:
+        th.join()
 
-            if "wp-content" in text:
-                print(G+"CMS: WordPress"+W)
-            elif "joomla" in text:
-                print(G+"CMS: Joomla"+W)
-            else:
-                print(R+"CMS: Unknown"+W)
+# ---------------- Main ----------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--domain", required=True)
+    parser.add_argument("-m", "--mode", choices=["fast","deep"], default="fast")
+    args = parser.parse_args()
 
-            if "robots.txt" in text:
-                print(G+"robots.txt detected"+W)
+    banner()
 
-        except Exception as e:
-            print(R+"Error: "+str(e)+W)
+    out = workspace(args.domain)
+    print(f"[+] Output: {out}")
 
-    # ================= WHOIS =================
-    def whois(self):
-        dom=self.domain()
-        r=requests.get(f"https://api.hackertarget.com/whois/?q={dom}")
-        print(r.text)
+    # Phase 1
+    subdomain(args.domain, out, args.mode)
+    live(out)
 
-    # ================= GEOIP =================
-    def geoip(self):
-        dom=self.domain()
-        r=requests.get(f"https://api.hackertarget.com/geoip/?q={dom}")
-        print(r.text)
+    # Phase 2 (parallel)
+    threaded([
+        lambda: urls(args.domain, out),
+    ])
 
-    # ================= DNS =================
-    def dns(self):
-        dom=self.domain()
-        r=requests.get(f"https://api.hackertarget.com/dnslookup/?q={dom}")
-        print(r.text)
+    # Phase 3
+    param_discovery(out)
+    js_scan(out)
 
-    # ================= HEADERS =================
-    def headers(self):
-        r=requests.get(self.normalize(self.target))
-        for k,v in r.headers.items():
-            print(k+":",v)
+    if args.mode == "deep":
+        ports(out)
 
-    # ================= SUBNET =================
-    def subnet(self):
-        ip = socket.gethostbyname(self.domain())
-        print("[+] IP:",ip)
+    vuln(out)
 
-        base=".".join(ip.split(".")[:3])
-        print("[+] /24 range:")
+    # Alerts
+    if os.path.exists(f"{out}/vulns.txt"):
+        send_telegram(f"ShatterMind Found Vulnerabilities on {args.domain}")
 
-        for i in range(1,20):
-            print(base+"."+str(i))
+    print("\n✅ Completed. Check:", out)
 
-    # ================= NMAP =================
-    def nmap(self):
-        dom=self.domain()
-        ip=socket.gethostbyname(dom)
-        print("[+] Scanning:",ip)
-        os.system(f"nmap -F {ip}")
-
-    # ================= SUBDOMAINS =================
-    def subdomains(self):
-        dom=self.domain()
-        words=["www","mail","ftp","api","dev","test","admin","blog","ns1","ns2"]
-
-        for w in words:
-            host=f"{w}.{dom}"
-            try:
-                socket.gethostbyname(host)
-                print("[FOUND]",host)
-            except:
-                pass
-
-    # ================= REVERSE IP =================
-    def reverseip(self):
-        dom=self.domain()
-        r=requests.get(f"https://api.hackertarget.com/reverseiplookup/?q={dom}")
-        print(r.text)
-
-    # ================= SQLI CHECK =================
-    def sqli(self):
-        url=self.normalize(self.target)+"'"
-        try:
-            r=requests.get(url)
-            errors=["sql","mysql","syntax","warning","error"]
-            if any(e in r.text.lower() for e in errors):
-                print(R+"[!] Possible SQL Injection"+W)
-            else:
-                print(G+"[-] No obvious SQLi detected"+W)
-        except:
-            print(R+"Request failed"+W)
-
-    # ================= WORDPRESS =================
-    def wordpress(self):
-        url=self.normalize(self.target)
-        r=requests.get(url).text
-
-        if "wp-content" in r:
-            print(G+"WordPress detected"+W)
-
-            checks=["/wp-login.php","/xmlrpc.php","/wp-json"]
-            for c in checks:
-                rr=requests.get(url+c)
-                print(c, rr.status_code)
-        else:
-            print(R+"Not WordPress"+W)
-
-    # ================= CRAWLER =================
-    def crawl(self):
-        url=self.normalize(self.target)
-        links=set()
-
-        r=requests.get(url)
-        found=re.findall('href=["\'](.*?)["\']',r.text)
-
-        for f in found:
-            if self.domain() in f or f.startswith("/"):
-                links.add(f)
-
-        print("[+] Links found:")
-        for l in list(links)[:30]:
-            print(l)
-
-    # ================= RUN =================
-    def run(self):
-        self.banner()
-
-        while True:
-            cmd=input("shattermind> ")
-
-            if cmd.startswith("set "):
-                self.target=cmd.split(" ",1)[1]
-                print("[+] Target set")
-
-            elif cmd=="info":
-                self.info()
-
-            elif cmd=="whois":
-                self.whois()
-
-            elif cmd=="geoip":
-                self.geoip()
-
-            elif cmd=="dns":
-                self.dns()
-
-            elif cmd=="headers":
-                self.headers()
-
-            elif cmd=="subnet":
-                self.subnet()
-
-            elif cmd=="nmap":
-                self.nmap()
-
-            elif cmd=="subdomains":
-                self.subdomains()
-
-            elif cmd=="reverseip":
-                self.reverseip()
-
-            elif cmd=="sqli":
-                self.sqli()
-
-            elif cmd=="wordpress":
-                self.wordpress()
-
-            elif cmd=="crawl":
-                self.crawl()
-
-            elif cmd=="exit":
-                sys.exit()
-
-            else:
-                print("unknown command")
-
-
-if __name__=="__main__":
-    ShatterMind().run()
+if __name__ == "__main__":
+    main()
